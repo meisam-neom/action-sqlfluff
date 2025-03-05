@@ -4,18 +4,18 @@
     url: "https://github.com/sqlfluff/sqlfluff"
   },
   diagnostics: [
-    .[] | .violations[] | {
-      message: .description,
+    .[] | .violations[] as $violation | {
+      message: $violation.description,
       code: {
-        value: .code,
-        url: "https://docs.sqlfluff.com/en/stable/rules.html#rule-\(.code | ascii_upcase)"
+        value: $violation.code,
+        url: "https://docs.sqlfluff.com/en/stable/rules.html#rule-\($violation.code | ascii_upcase)"
       },
       location: {
-        path: .filepath,
+        path: $violation.filepath,
         range: {
           start: {
-            line: (.start_line_no // .line_no // 1),
-            column: (.start_line_pos // .line_pos // 1)
+            line: ($violation.start_line_no // $violation.line_no // 1),
+            column: ($violation.start_line_pos // $violation.line_pos // 1)
           }
         }
       },
