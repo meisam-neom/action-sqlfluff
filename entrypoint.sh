@@ -67,6 +67,7 @@ if [[ ${SQLFLUFF_COMMAND:?} == "lint" ]]; then
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
+		--nocolor \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
@@ -128,6 +129,7 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# Run sqlfluff fix
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff fix \
+		--nocolor \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
@@ -188,15 +190,17 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	lint_results="sqlfluff-lint-after-fix.json"
 	
 	# Run sqlfluff lint with the same parameters as the original fix command
+	# but add --no-jinja to analyze the raw SQL files rather than compiled templates
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
+		--nocolor \
+		--no-jinja \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
+		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes 1"; fi) \
 		$(if [[ "x${SQLFLUFF_RULES}" != "x" ]]; then echo "--rules ${SQLFLUFF_RULES}"; fi) \
 		$(if [[ "x${SQLFLUFF_EXCLUDE_RULES}" != "x" ]]; then echo "--exclude-rules ${SQLFLUFF_EXCLUDE_RULES}"; fi) \
-		$(if [[ "x${SQLFLUFF_TEMPLATER}" != "x" ]]; then echo "--templater ${SQLFLUFF_TEMPLATER}"; fi) \
 		$(if [[ "x${SQLFLUFF_DISABLE_NOQA}" != "x" ]]; then echo "--disable-noqa ${SQLFLUFF_DISABLE_NOQA}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$changed_files > "$lint_results" || true
