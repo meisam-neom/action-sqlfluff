@@ -117,6 +117,15 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	echo '::group:: Running sqlfluff fix 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
+	
+	# First, make a copy of the original files for comparison
+	temp_dir=$(mktemp -d)
+	for file in $changed_files; do
+		mkdir -p "$temp_dir/$(dirname "$file")"
+		cp "$file" "$temp_dir/$file"
+	done
+	
+	# Run sqlfluff fix
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff fix \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
@@ -134,28 +143,39 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	set -Eeuo pipefail
 	echo '::endgroup::'
 
-	# SEE https://github.com/reviewdog/action-suggester/blob/master/script.sh
+	# Generate diff for reviewdog
 	echo '::group:: Running reviewdog for fix suggestions 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 
-	# Suggest the differences
-	temp_file=$(mktemp)
-	git diff | tee "${temp_file}"
-	git stash -u
-
-	# shellcheck disable=SC2034
-	reviewdog \
-		-name="sqlfluff-fix" \
-		-f=diff \
-		-f.diff.strip=1 \
-		-reporter="${REVIEWDOG_REPORTER}" \
-		-filter-mode="${REVIEWDOG_FILTER_MODE}" \
-		-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-		-level="${REVIEWDOG_LEVEL}" <"${temp_file}" || exit_code=$?
-
+	# Create a diff file for each changed file
+	diff_file=$(mktemp)
+	for file in $changed_files; do
+		if [[ -f "$temp_dir/$file" && -f "$file" ]]; then
+			# Create a unified diff
+			diff -u "$temp_dir/$file" "$file" | sed "s|$temp_dir/||" >> "$diff_file" || true
+		fi
+	done
+	
+	# Check if we have any diffs
+	if [[ -s "$diff_file" ]]; then
+		# Send the diff to reviewdog
+		cat "$diff_file" | reviewdog \
+			-name="sqlfluff-fix" \
+			-f=diff \
+			-f.diff.strip=1 \
+			-reporter="${REVIEWDOG_REPORTER}" \
+			-filter-mode="${REVIEWDOG_FILTER_MODE}" \
+			-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
+			-level="${REVIEWDOG_LEVEL}"
+	else
+		echo "No changes were made by sqlfluff fix"
+	fi
+	
 	# Clean up
-	git stash drop || true
+	rm -rf "$temp_dir"
+	rm -f "$diff_file"
+	
 	set -Eeuo pipefail
 	echo '::endgroup::'
 	
@@ -164,30 +184,13 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 	
-	# Create a fresh environment for the lint command to avoid connection issues
-	echo "Creating a fresh environment for lint after fix..."
+	# Run a separate lint command to find unfixable issues
+	lint_results="sqlfluff-lint-after-fix.json"
 	
-	# Save the current directory
-	current_dir=$(pwd)
-	
-	# Create a temporary directory for the lint operation
-	temp_dir=$(mktemp -d)
-	cp -r "$INPUT_WORKING_DIRECTORY"/* "$temp_dir/" 2>/dev/null || true
-	
-	# Copy any necessary config files
-	if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then
-		config_dir=$(dirname "${SQLFLUFF_CONFIG}")
-		mkdir -p "$temp_dir/$config_dir" 2>/dev/null || true
-		cp "${SQLFLUFF_CONFIG}" "$temp_dir/${SQLFLUFF_CONFIG}" 2>/dev/null || true
-	fi
-	
-	# Run the lint command with --disable-dbt-conn to avoid connection issues
-	lint_results="$current_dir/sqlfluff-lint-after-fix.json"
-	
+	# Run sqlfluff lint with the same parameters as the original fix command
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
-		--disable-dbt-conn \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
@@ -196,37 +199,35 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 		$(if [[ "x${SQLFLUFF_TEMPLATER}" != "x" ]]; then echo "--templater ${SQLFLUFF_TEMPLATER}"; fi) \
 		$(if [[ "x${SQLFLUFF_DISABLE_NOQA}" != "x" ]]; then echo "--disable-noqa ${SQLFLUFF_DISABLE_NOQA}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$changed_files > "$lint_results" 2>/dev/null || true
+		$changed_files > "$lint_results" || true
 	
-	# Check if the lint results file exists and has content
-	if [[ -f "$lint_results" && -s "$lint_results" ]]; then
-		lint_results_rdjson="$current_dir/sqlfluff-lint-after-fix.rdjson"
+	# Check if we have valid JSON output
+	if jq empty "$lint_results" 2>/dev/null; then
+		echo "Successfully generated lint results after fix"
 		
-		# Try to convert to rdjson format
-		if cat "$lint_results" | jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" > "$lint_results_rdjson" 2>/dev/null; then
-			# If conversion succeeded, send to reviewdog
-			if cat "$lint_results_rdjson" | reviewdog -f=rdjson \
+		# Convert to reviewdog format
+		lint_results_rdjson="sqlfluff-lint-after-fix.rdjson"
+		cat "$lint_results" | jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" > "$lint_results_rdjson" || true
+		
+		# Send to reviewdog if we have valid rdjson
+		if jq empty "$lint_results_rdjson" 2>/dev/null; then
+			cat "$lint_results_rdjson" | reviewdog \
+				-f=rdjson \
 				-name="sqlfluff-remaining-issues" \
 				-reporter="${REVIEWDOG_REPORTER}" \
 				-filter-mode="${REVIEWDOG_FILTER_MODE}" \
 				-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-				-level="${REVIEWDOG_LEVEL}" 2>/dev/null; then
-				echo "Successfully reported remaining issues after fix"
-			else
-				echo "Warning: Failed to send remaining issues to reviewdog"
-			fi
+				-level="${REVIEWDOG_LEVEL}" || true
+			
+			echo "name=sqlfluff-remaining-issues::$(cat "$lint_results" | jq -r -c '.')" >>$GITHUB_OUTPUT
 		else
-			echo "Warning: Failed to convert lint results to rdjson format"
+			echo "Warning: Failed to convert lint results to valid rdjson format"
+			echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
 		fi
-		
-		echo "name=sqlfluff-remaining-issues::$(cat "$lint_results" | jq -r -c '.' 2>/dev/null || echo '{}')" >>$GITHUB_OUTPUT
 	else
-		echo "Warning: No valid lint results after fix"
+		echo "Warning: Failed to generate valid lint results after fix"
 		echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
 	fi
-	
-	# Clean up
-	rm -rf "$temp_dir"
 	
 	set -Eeuo pipefail
 	echo '::endgroup::'
