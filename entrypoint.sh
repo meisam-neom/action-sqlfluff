@@ -150,10 +150,8 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 
 	# Create a diff file for each changed file
 	diff_file=$(mktemp)
-	echo "Generating diffs for changed files..."
 	for file in $changed_files; do
 		if [[ -f "$temp_dir/$file" && -f "$file" ]]; then
-			echo "Checking diff for $file"
 			# Create a unified diff
 			diff -u "$temp_dir/$file" "$file" | sed "s|$temp_dir/||" >> "$diff_file" || true
 		fi
@@ -161,11 +159,6 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	
 	# Check if we have any diffs
 	if [[ -s "$diff_file" ]]; then
-		echo "Diff file content (first 500 bytes):"
-		head -c 500 "$diff_file"
-		echo "..."
-		
-		echo "Sending diff to reviewdog..."
 		# Send the diff to reviewdog
 		cat "$diff_file" | reviewdog \
 			-name="sqlfluff-fix" \
@@ -174,8 +167,7 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 			-reporter="${REVIEWDOG_REPORTER}" \
 			-filter-mode="${REVIEWDOG_FILTER_MODE}" \
 			-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-			-level="${REVIEWDOG_LEVEL}" \
-			-tee
+			-level="${REVIEWDOG_LEVEL}"
 	else
 		echo "No changes were made by sqlfluff fix"
 	fi
@@ -195,106 +187,47 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# Run a separate lint command to find unfixable issues
 	lint_results="sqlfluff-lint-after-fix.json"
 	
-	# Create a temporary config file that uses the raw templater
-	temp_config=$(mktemp)
-	if [[ -f "${SQLFLUFF_CONFIG}" ]]; then
-		cp "${SQLFLUFF_CONFIG}" "$temp_config"
-		# Replace templater = dbt with templater = raw
-		sed -i 's/templater = dbt/templater = raw/g' "$temp_config"
-		echo "Created temporary config with raw templater:"
-		cat "$temp_config"
-	fi
-	
-	echo "Running sqlfluff lint with raw templater..."
-	# Run sqlfluff lint with raw templater to analyze the actual SQL files
+	# Run sqlfluff lint with the same parameters as the original fix command
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
-		--config "$temp_config" \
+		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes 1"; fi) \
+		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
 		$(if [[ "x${SQLFLUFF_RULES}" != "x" ]]; then echo "--rules ${SQLFLUFF_RULES}"; fi) \
 		$(if [[ "x${SQLFLUFF_EXCLUDE_RULES}" != "x" ]]; then echo "--exclude-rules ${SQLFLUFF_EXCLUDE_RULES}"; fi) \
+		$(if [[ "x${SQLFLUFF_TEMPLATER}" != "x" ]]; then echo "--templater ${SQLFLUFF_TEMPLATER}"; fi) \
 		$(if [[ "x${SQLFLUFF_DISABLE_NOQA}" != "x" ]]; then echo "--disable-noqa ${SQLFLUFF_DISABLE_NOQA}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$changed_files > "$lint_results" 2>&1 || true
+		$changed_files > "$lint_results" || true
 	
 	# Check if we have valid JSON output
 	if jq empty "$lint_results" 2>/dev/null; then
 		echo "Successfully generated lint results after fix"
-		echo "Lint results (first 500 bytes):"
-		head -c 500 "$lint_results"
-		echo "..."
 		
 		# Convert to reviewdog format
 		lint_results_rdjson="sqlfluff-lint-after-fix.rdjson"
-		echo "Converting to reviewdog format..."
 		cat "$lint_results" | jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" > "$lint_results_rdjson" || true
 		
-		# Check if rdjson is valid
+		# Send to reviewdog if we have valid rdjson
 		if jq empty "$lint_results_rdjson" 2>/dev/null; then
-			echo "Successfully converted to rdjson format"
-			echo "RDJSON (first 500 bytes):"
-			head -c 500 "$lint_results_rdjson"
-			echo "..."
-			
-			echo "Sending to reviewdog..."
-			# Send to reviewdog
 			cat "$lint_results_rdjson" | reviewdog \
 				-f=rdjson \
 				-name="sqlfluff-remaining-issues" \
 				-reporter="${REVIEWDOG_REPORTER}" \
 				-filter-mode="${REVIEWDOG_FILTER_MODE}" \
 				-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-				-level="${REVIEWDOG_LEVEL}" \
-				-tee || true
+				-level="${REVIEWDOG_LEVEL}" || true
 			
 			echo "name=sqlfluff-remaining-issues::$(cat "$lint_results" | jq -r -c '.')" >>$GITHUB_OUTPUT
 		else
 			echo "Warning: Failed to convert lint results to valid rdjson format"
-			echo "Invalid RDJSON content:"
-			cat "$lint_results_rdjson"
 			echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
 		fi
 	else
 		echo "Warning: Failed to generate valid lint results after fix"
-		echo "Invalid JSON content:"
-		cat "$lint_results"
 		echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
-		
-		# Try running without the modified config as a fallback
-		echo "Trying fallback lint command with original config..."
-		sqlfluff lint \
-			--format json \
-			$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
-			$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-			$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes 1"; fi) \
-			$(if [[ "x${SQLFLUFF_RULES}" != "x" ]]; then echo "--rules ${SQLFLUFF_RULES}"; fi) \
-			$(if [[ "x${SQLFLUFF_EXCLUDE_RULES}" != "x" ]]; then echo "--exclude-rules ${SQLFLUFF_EXCLUDE_RULES}"; fi) \
-			$(if [[ "x${SQLFLUFF_TEMPLATER}" != "x" ]]; then echo "--templater ${SQLFLUFF_TEMPLATER}"; fi) \
-			$(if [[ "x${SQLFLUFF_DISABLE_NOQA}" != "x" ]]; then echo "--disable-noqa ${SQLFLUFF_DISABLE_NOQA}"; fi) \
-			$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-			$changed_files > "sqlfluff-lint-fallback.json" 2>&1 || true
-		
-		if jq empty "sqlfluff-lint-fallback.json" 2>/dev/null; then
-			echo "Successfully generated fallback lint results"
-			cat "sqlfluff-lint-fallback.json" | jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" > "sqlfluff-lint-fallback.rdjson" || true
-			
-			if jq empty "sqlfluff-lint-fallback.rdjson" 2>/dev/null; then
-				cat "sqlfluff-lint-fallback.rdjson" | reviewdog \
-					-f=rdjson \
-					-name="sqlfluff-remaining-issues-fallback" \
-					-reporter="${REVIEWDOG_REPORTER}" \
-					-filter-mode="${REVIEWDOG_FILTER_MODE}" \
-					-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-					-level="${REVIEWDOG_LEVEL}" \
-					-tee || true
-			fi
-		fi
 	fi
-	
-	# Clean up
-	rm -f "$temp_config"
 	
 	set -Eeuo pipefail
 	echo '::endgroup::'
