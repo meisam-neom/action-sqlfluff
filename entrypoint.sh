@@ -150,32 +150,39 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 
-	# Create a unified diff file
+	# Create a unified diff file in the format that reviewdog expects for suggestions
 	diff_file=$(mktemp)
 	echo "Generating diff file for reviewdog..."
 	
 	for file in $changed_files; do
 		if [[ -f "$temp_dir/$file" && -f "$file" ]]; then
-			echo "Comparing $file..."
-			# Create a unified diff with proper file paths
-			diff -u --label="a/$file" --label="b/$file" "$temp_dir/$file" "$file" >> "$diff_file" || true
+			echo "Processing $file..."
+			
+			# Create a proper unified diff with standard format
+			diff -u "$temp_dir/$file" "$file" | sed "s|$temp_dir/||" > "${diff_file}.tmp" || true
+			
+			if [[ -s "${diff_file}.tmp" ]]; then
+				# Ensure the diff has the correct format for GitHub suggestions
+				cat "${diff_file}.tmp" | sed -E 's|^--- a/(.*)$|--- \1|' | sed -E 's|^\+\+\+ b/(.*)$|+++ \1|' >> "$diff_file"
+			fi
+			
+			rm -f "${diff_file}.tmp"
 		fi
 	done
 	
 	# Check if we have any diffs
 	if [[ -s "$diff_file" ]]; then
-		echo "Diff file content (first 200 bytes):"
-		head -c 200 "$diff_file"
+		echo "Diff file content (first 500 bytes):"
+		head -c 500 "$diff_file"
 		echo
 		
-		# Send the diff to reviewdog
+		# Use the suggester reporter for reviewdog to create GitHub suggestions
 		cat "$diff_file" | reviewdog \
 			-name="sqlfluff-fix" \
 			-f=diff \
-			-f.diff.strip=1 \
-			-reporter="${REVIEWDOG_REPORTER}" \
-			-filter-mode="${REVIEWDOG_FILTER_MODE}" \
-			-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
+			-f.diff.strip=0 \
+			-reporter="github-pr-review" \
+			-filter-mode="diff_context" \
 			-level="${REVIEWDOG_LEVEL}"
 		
 		echo "Reviewdog exit code: $?"
