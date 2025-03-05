@@ -118,15 +118,6 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	echo '::group:: Running sqlfluff fix 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
-	
-	# First, make a copy of the original files for comparison
-	temp_dir=$(mktemp -d)
-	for file in $changed_files; do
-		mkdir -p "$temp_dir/$(dirname "$file")"
-		cp "$file" "$temp_dir/$file"
-	done
-	
-	# Run sqlfluff fix
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff fix \
 		--ignore=templating \
@@ -145,54 +136,28 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	set -Eeuo pipefail
 	echo '::endgroup::'
 
-	# Generate diff for reviewdog
+	# SEE https://github.com/reviewdog/action-suggester/blob/master/script.sh
 	echo '::group:: Running reviewdog for fix suggestions 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 
-	# Create a unified diff file in the format that reviewdog expects for suggestions
-	diff_file=$(mktemp)
-	echo "Generating diff file for reviewdog..."
-	
-	for file in $changed_files; do
-		if [[ -f "$temp_dir/$file" && -f "$file" ]]; then
-			echo "Processing $file..."
-			
-			# Create a proper unified diff with standard format
-			diff -u "$temp_dir/$file" "$file" | sed "s|$temp_dir/||" > "${diff_file}.tmp" || true
-			
-			if [[ -s "${diff_file}.tmp" ]]; then
-				# Ensure the diff has the correct format for GitHub suggestions
-				cat "${diff_file}.tmp" | sed -E 's|^--- a/(.*)$|--- \1|' | sed -E 's|^\+\+\+ b/(.*)$|+++ \1|' >> "$diff_file"
-			fi
-			
-			rm -f "${diff_file}.tmp"
-		fi
-	done
-	
-	# Check if we have any diffs
-	if [[ -s "$diff_file" ]]; then
-		echo "Diff file content (first 500 bytes):"
-		head -c 500 "$diff_file"
-		echo
-		
-		# Use the suggester reporter for reviewdog to create GitHub suggestions
-		cat "$diff_file" | reviewdog \
-			-name="sqlfluff-fix" \
-			-f=diff \
-			-f.diff.strip=0 \
-			-reporter="github-pr-review" \
-			-filter-mode="diff_context" \
-			-level="${REVIEWDOG_LEVEL}"
-		
-		echo "Reviewdog exit code: $?"
-	else
-		echo "No changes were made by sqlfluff fix"
-	fi
-	
+	# Suggest the differences
+	temp_file=$(mktemp)
+	git diff | tee "${temp_file}"
+	git stash -u
+
+	# shellcheck disable=SC2034
+	reviewdog \
+		-name="sqlfluff-fix" \
+		-f=diff \
+		-f.diff.strip=1 \
+		-reporter="${REVIEWDOG_REPORTER}" \
+		-filter-mode="${REVIEWDOG_FILTER_MODE}" \
+		-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
+		-level="${REVIEWDOG_LEVEL}" <"${temp_file}" || exit_code=$?
+
 	# Clean up
-	rm -rf "$temp_dir"
-	rm -f "$diff_file"
+	git stash drop || true
 	
 	set -Eeuo pipefail
 	echo '::endgroup::'
