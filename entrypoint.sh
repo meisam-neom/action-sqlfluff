@@ -115,7 +115,7 @@ if [[ ${SQLFLUFF_COMMAND:?} == "lint" ]]; then
 
 # Format changed files if the mode is fix
 elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
-	echo '::group:: Running sqlfluff fix 🐶 ...'
+	echo '::group:: Running sqlfluff 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 	# shellcheck disable=SC2086,SC2046
@@ -137,7 +137,7 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	echo '::endgroup::'
 
 	# SEE https://github.com/reviewdog/action-suggester/blob/master/script.sh
-	echo '::group:: Running reviewdog for fix suggestions 🐶 ...'
+	echo '::group:: Running reviewdog 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 
@@ -158,60 +158,6 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 
 	# Clean up
 	git stash drop || true
-	
-	set -Eeuo pipefail
-	echo '::endgroup::'
-	
-	# Run lint after fix to report remaining issues
-	echo '::group:: Running sqlfluff lint after fix to report remaining issues 🐶 ...'
-	# Allow failures now, as reviewdog handles them
-	set +Eeuo pipefail
-	
-	# Run a separate lint command to find unfixable issues
-	lint_results="sqlfluff-lint-after-fix.json"
-	
-	# Run sqlfluff lint with the same parameters as the original fix command
-	# shellcheck disable=SC2086,SC2046
-	sqlfluff lint \
-		--format json \
-		--ignore=templating \
-		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
-		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
-		$(if [[ "x${SQLFLUFF_RULES}" != "x" ]]; then echo "--rules ${SQLFLUFF_RULES}"; fi) \
-		$(if [[ "x${SQLFLUFF_EXCLUDE_RULES}" != "x" ]]; then echo "--exclude-rules ${SQLFLUFF_EXCLUDE_RULES}"; fi) \
-		$(if [[ "x${SQLFLUFF_TEMPLATER}" != "x" ]]; then echo "--templater ${SQLFLUFF_TEMPLATER}"; fi) \
-		$(if [[ "x${SQLFLUFF_DISABLE_NOQA}" != "x" ]]; then echo "--disable-noqa ${SQLFLUFF_DISABLE_NOQA}"; fi) \
-		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$changed_files > "$lint_results" || true
-	
-	# Check if we have valid JSON output
-	if jq empty "$lint_results" 2>/dev/null; then
-		echo "Successfully generated lint results after fix"
-		
-		# Convert to reviewdog format
-		lint_results_rdjson="sqlfluff-lint-after-fix.rdjson"
-		cat "$lint_results" | jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" > "$lint_results_rdjson" || true
-		
-		# Send to reviewdog if we have valid rdjson
-		if jq empty "$lint_results_rdjson" 2>/dev/null; then
-			cat "$lint_results_rdjson" | reviewdog \
-				-f=rdjson \
-				-name="sqlfluff-remaining-issues" \
-				-reporter="${REVIEWDOG_REPORTER}" \
-				-filter-mode="${REVIEWDOG_FILTER_MODE}" \
-				-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-				-level="${REVIEWDOG_LEVEL}" || true
-			
-			echo "name=sqlfluff-remaining-issues::$(cat "$lint_results" | jq -r -c '.')" >>$GITHUB_OUTPUT
-		else
-			echo "Warning: Failed to convert lint results to valid rdjson format"
-			echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
-		fi
-	else
-		echo "Warning: Failed to generate valid lint results after fix"
-		echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
-	fi
 	
 	set -Eeuo pipefail
 	echo '::endgroup::'
