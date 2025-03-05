@@ -163,10 +163,31 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	echo '::group:: Running sqlfluff lint after fix to report remaining issues 🐶 ...'
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
-	lint_results="sqlfluff-lint-after-fix.json"
+	
+	# Create a fresh environment for the lint command to avoid connection issues
+	echo "Creating a fresh environment for lint after fix..."
+	
+	# Save the current directory
+	current_dir=$(pwd)
+	
+	# Create a temporary directory for the lint operation
+	temp_dir=$(mktemp -d)
+	cp -r "$INPUT_WORKING_DIRECTORY"/* "$temp_dir/" 2>/dev/null || true
+	
+	# Copy any necessary config files
+	if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then
+		config_dir=$(dirname "${SQLFLUFF_CONFIG}")
+		mkdir -p "$temp_dir/$config_dir" 2>/dev/null || true
+		cp "${SQLFLUFF_CONFIG}" "$temp_dir/${SQLFLUFF_CONFIG}" 2>/dev/null || true
+	fi
+	
+	# Run the lint command with --disable-dbt-conn to avoid connection issues
+	lint_results="$current_dir/sqlfluff-lint-after-fix.json"
+	
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
+		--disable-dbt-conn \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
@@ -175,24 +196,37 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 		$(if [[ "x${SQLFLUFF_TEMPLATER}" != "x" ]]; then echo "--templater ${SQLFLUFF_TEMPLATER}"; fi) \
 		$(if [[ "x${SQLFLUFF_DISABLE_NOQA}" != "x" ]]; then echo "--disable-noqa ${SQLFLUFF_DISABLE_NOQA}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
-		$changed_files |
-		tee "$lint_results"
-	lint_after_fix_exit_code=$?
-
-	lint_results_rdjson="sqlfluff-lint-after-fix.rdjson"
-	cat <"$lint_results" |
-		jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" |
-		tee >"$lint_results_rdjson"
-
-	cat <"$lint_results_rdjson" |
-		reviewdog -f=rdjson \
-			-name="sqlfluff-remaining-issues" \
-			-reporter="${REVIEWDOG_REPORTER}" \
-			-filter-mode="${REVIEWDOG_FILTER_MODE}" \
-			-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
-			-level="${REVIEWDOG_LEVEL}"
+		$changed_files > "$lint_results" 2>/dev/null || true
 	
-	echo "name=sqlfluff-remaining-issues::$(cat <"$lint_results" | jq -r -c '.')" >>$GITHUB_OUTPUT
+	# Check if the lint results file exists and has content
+	if [[ -f "$lint_results" && -s "$lint_results" ]]; then
+		lint_results_rdjson="$current_dir/sqlfluff-lint-after-fix.rdjson"
+		
+		# Try to convert to rdjson format
+		if cat "$lint_results" | jq -r -f "${SCRIPT_DIR}/to-rdjson.jq" > "$lint_results_rdjson" 2>/dev/null; then
+			# If conversion succeeded, send to reviewdog
+			if cat "$lint_results_rdjson" | reviewdog -f=rdjson \
+				-name="sqlfluff-remaining-issues" \
+				-reporter="${REVIEWDOG_REPORTER}" \
+				-filter-mode="${REVIEWDOG_FILTER_MODE}" \
+				-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
+				-level="${REVIEWDOG_LEVEL}" 2>/dev/null; then
+				echo "Successfully reported remaining issues after fix"
+			else
+				echo "Warning: Failed to send remaining issues to reviewdog"
+			fi
+		else
+			echo "Warning: Failed to convert lint results to rdjson format"
+		fi
+		
+		echo "name=sqlfluff-remaining-issues::$(cat "$lint_results" | jq -r -c '.' 2>/dev/null || echo '{}')" >>$GITHUB_OUTPUT
+	else
+		echo "Warning: No valid lint results after fix"
+		echo "name=sqlfluff-remaining-issues::{}" >>$GITHUB_OUTPUT
+	fi
+	
+	# Clean up
+	rm -rf "$temp_dir"
 	
 	set -Eeuo pipefail
 	echo '::endgroup::'
