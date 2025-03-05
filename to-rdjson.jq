@@ -8,7 +8,7 @@
       message: $violation.description,
       code: {
         value: $violation.code,
-        url: "https://docs.sqlfluff.com/en/stable/rules.html#rule-\($violation.code | ascii_upcase)"
+        url: "https://docs.sqlfluff.com/en/stable/reference/rules.html#rule-\($violation.code | ascii_upcase)"
       },
       location: {
         path: .filepath,

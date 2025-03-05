@@ -67,6 +67,7 @@ if [[ ${SQLFLUFF_COMMAND:?} == "lint" ]]; then
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
+		--ignore=templating \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
@@ -128,6 +129,7 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# Run sqlfluff fix
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff fix \
+		--ignore=templating \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
@@ -148,17 +150,24 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# Allow failures now, as reviewdog handles them
 	set +Eeuo pipefail
 
-	# Create a diff file for each changed file
+	# Create a unified diff file
 	diff_file=$(mktemp)
+	echo "Generating diff file for reviewdog..."
+	
 	for file in $changed_files; do
 		if [[ -f "$temp_dir/$file" && -f "$file" ]]; then
-			# Create a unified diff
-			diff -u "$temp_dir/$file" "$file" | sed "s|$temp_dir/||" >> "$diff_file" || true
+			echo "Comparing $file..."
+			# Create a unified diff with proper file paths
+			diff -u --label="a/$file" --label="b/$file" "$temp_dir/$file" "$file" >> "$diff_file" || true
 		fi
 	done
 	
 	# Check if we have any diffs
 	if [[ -s "$diff_file" ]]; then
+		echo "Diff file content (first 200 bytes):"
+		head -c 200 "$diff_file"
+		echo
+		
 		# Send the diff to reviewdog
 		cat "$diff_file" | reviewdog \
 			-name="sqlfluff-fix" \
@@ -168,6 +177,8 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 			-filter-mode="${REVIEWDOG_FILTER_MODE}" \
 			-fail-on-error="${REVIEWDOG_FAIL_ON_ERROR}" \
 			-level="${REVIEWDOG_LEVEL}"
+		
+		echo "Reviewdog exit code: $?"
 	else
 		echo "No changes were made by sqlfluff fix"
 	fi
@@ -191,6 +202,7 @@ elif [[ ${SQLFLUFF_COMMAND} == "fix" ]]; then
 	# shellcheck disable=SC2086,SC2046
 	sqlfluff lint \
 		--format json \
+		--ignore=templating \
 		$(if [[ "x${SQLFLUFF_CONFIG}" != "x" ]]; then echo "--config ${SQLFLUFF_CONFIG}"; fi) \
 		$(if [[ "x${SQLFLUFF_DIALECT}" != "x" ]]; then echo "--dialect ${SQLFLUFF_DIALECT}"; fi) \
 		$(if [[ "x${SQLFLUFF_PROCESSES}" != "x" ]]; then echo "--processes ${SQLFLUFF_PROCESSES}"; fi) \
